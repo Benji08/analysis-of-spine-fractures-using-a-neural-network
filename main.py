@@ -6,21 +6,10 @@ import random
 import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from neural_network import Conv3DNet
-
-class Custom3DDataset(Dataset):
-    def __init__(self, tensors, y1_labels):
-        self.tensors = tensors
-        self.y1_labels = y1_labels
-
-    def __len__(self):
-        return len(self.tensors)
-
-    def __getitem__(self, idx):
-        x = self.tensors[idx]  # dodajemy kanał
-        y1 = self.y1_labels[idx]
-        return x, y1
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+from neural_network import Conv3DNet, Custom3DDataset
 
 
 def verify_data_shape(folder_path):
@@ -35,18 +24,13 @@ def verify_data_shape(folder_path):
                False and a set of unique shapes otherwise.
     """
     shapes = set()
-
-    # Iterate through all files in the folder
     for filename in os.listdir(folder_path):
         if filename.endswith('.nrrd'):
             file_path = os.path.join(folder_path, filename)
             try:
-                # Read the .nrrd file
                 data, _ = nrrd.read(file_path)
-                # Add the shape of the file to the set
                 shapes.add(data.shape)
             except Exception as e:
-                # Handle any errors during reading
                 print(f"Error reading file {filename}: {e}")
 
     # Check if all shapes are identical
@@ -54,7 +38,6 @@ def verify_data_shape(folder_path):
         return True, shapes.pop()
     else:
         return False, shapes
-
 
 def preprocess_and_convert(file_path, lower_bound=0, upper_bound=2000):
     """
@@ -64,7 +47,6 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=2000):
         file_path (str): Path to the .nrrd file.
         lower_bound (float): Minimum value for clipping.
         upper_bound (float): Maximum value for clipping.
-        standardize (bool): Whether to apply Z-score standardization.
 
     Returns:
         torch.Tensor: Preprocessed tensor.
@@ -75,11 +57,11 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=2000):
     # Step 2: Clip the data to the specified range
     data = np.clip(data, lower_bound, upper_bound)
 
-    #obecnie używam standaryzacji bez normalizacji
+    # Currently using standardization without normalization
     # Step 3: Normalize the data to [0, 1]
     #data = (data - data.min()) / (data.max() - data.min())
 
-    # Step 4: Optionally standardize the data
+    # Step 4: Standardize the data
     mean = np.mean(data)
     std = np.std(data)
     data = (data - mean) / std
@@ -96,9 +78,8 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=2000):
         y1 = 1
         code = filename[7:9]
         y2_mapping = {"A0": 1, "A1": 2, "A2": 3, "A3": 4, "A4": 5}
-        y2 = y2_mapping.get(code, 0)  # domyślnie 0, jeśli kod nieznany
+        y2 = y2_mapping.get(code, 0)  # Default to 0 if the code is unknown
     return tensor, y1, y2
-
 
 def resize_tensor(tensor, target_size=(64, 64, 32)):
     """
@@ -111,10 +92,9 @@ def resize_tensor(tensor, target_size=(64, 64, 32)):
     Returns:
         torch.Tensor: Resized tensor.
     """
-    tensor = tensor.unsqueeze(0).unsqueeze(0)  # Dodanie wymiarów batch i channel
+    tensor = tensor.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
     tensor_resized = F.interpolate(tensor, size=target_size, mode='trilinear', align_corners=False)
-    return tensor_resized.squeeze(0).squeeze(0)  # Usunięcie wymiarów batch i channel
-
+    return tensor_resized.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
 
 def flip_x(tensor):
     """
@@ -126,7 +106,6 @@ def flip_x(tensor):
     """
     tensor = tensor.flip(2)
     return tensor
-
 
 def translate(tensor, max_shift=5):
     """
@@ -149,7 +128,6 @@ def translate(tensor, max_shift=5):
                     max_shift + shift_w: max_shift + shift_w + W]
     return tensor
 
-
 def add_gaussian_noise(tensor, mean=0, std=0.01):
     """
     Adds Gaussian noise to a 3D tensor.
@@ -163,46 +141,48 @@ def add_gaussian_noise(tensor, mean=0, std=0.01):
     noise = torch.randn_like(tensor) * std + mean
     return tensor + noise
 
-
-def generate_augmented_tensors(tensor_list, y1_list, y2_list, num_tensors, augmentations):
+def generate_augmented_tensors(tensors, y1, y2, num_tensors, augmentations):
     """
-    Generates a specified number of augmented tensors by applying random augmentations
-    to randomly chosen tensors from the input list.
+    Generates additional sets of tensors by augmenting existing tensors.
 
     Args:
-        tensor_list (list of torch.Tensor): List of input tensors.
-        num_tensors (int): Number of augmented tensors to generate.
+        tensors (torch.Tensor): Input tensor with shape (N, D, H, W).
+        y1 (torch.Tensor): Labels y1 with shape (N,).
+        y2 (torch.Tensor): Labels y2 with shape (N,).
+        num_tensors (int): Number of new tensors to generate.
         augmentations (list): List of augmentation functions.
 
     Returns:
-        list of torch.Tensor: List of newly augmented tensors.
+        torch.Tensor: New tensor samples with shape (num_tensors, D, H, W).
+        torch.Tensor: New labels y1 with shape (num_tensors,).
+        torch.Tensor: New labels y2 with shape (num_tensors,).
     """
-    augmented_tensors = []
+    N, D, H, W = tensors.shape
+    augmented_samples = []
     augmented_y1 = []
     augmented_y2 = []
 
     for _ in range(num_tensors):
-        # Randomly select a tensor from the input list
-        idx = random.randint(0, len(tensor_list) - 1)
-        tensor = tensor_list[idx]
-        y1 = y1_list[idx]
-        y2 = y2_list[idx]
+        idx = random.randint(0, N - 1)
+        tensor = tensors[idx]
+        label_y1 = y1[idx]
+        label_y2 = y2[idx]
 
-        # Randomly select an augmentation function
         augmentation = random.choice(augmentations)
-
-        # Apply the augmentation to the tensor
         augmented_tensor = augmentation(tensor.clone())
 
-        # Append augmented tensor and its labels
-        augmented_tensors.append(augmented_tensor)
-        augmented_y1.append(y1)  # y1 stays the same
-        augmented_y2.append(y2)  # y2 stays the same
+        augmented_samples.append(augmented_tensor)
+        augmented_y1.append(label_y1)
+        augmented_y2.append(label_y2)
 
-    return augmented_tensors, augmented_y1, augmented_y2
+    augmented_samples = torch.stack(augmented_samples)  # (num_tensors, D, H, W)
+    augmented_y1 = torch.tensor(augmented_y1)
+    augmented_y2 = torch.tensor(augmented_y2)
+
+    return augmented_samples, augmented_y1, augmented_y2
 
 
-# Ścieżka do folderu z danymi
+# Path to data folder
 folder_path = "C:/Users/barba/OneDrive/Pulpit/tomografia"
 processed_tensors = []
 Y1 = []
@@ -217,7 +197,20 @@ for filename in os.listdir(folder_path):
         processed_tensors.append(tensor)
         Y1.append(y1)
         Y2.append(y2)
-print(f"Generated {len(processed_tensors)} tensors. Size = {processed_tensors[0].size}")
+
+processed_tensors = torch.stack(processed_tensors)  # (N, D, H, W)
+Y1 = torch.tensor(Y1)
+Y2 = torch.tensor(Y2)
+
+print(f"Generated {len(processed_tensors)} tensors. Shape = {processed_tensors[0].shape}")
+# Division into sets: 70% train, 15% val, 15% test
+train_X, test_X, train_Y1, test_Y1, train_Y2, test_Y2 = train_test_split(
+    processed_tensors, Y1, Y2, test_size=0.3, random_state=42
+)
+
+val_X, test_X, val_Y1, test_Y1, val_Y2, test_Y2 = train_test_split(
+    test_X, test_Y1, test_Y2, test_size=0.5, random_state=42
+)
 
 # Define augmentation functions
 augmentations = [
@@ -225,56 +218,106 @@ augmentations = [
         lambda t: translate(t, max_shift=10),  # Translate
         lambda t: add_gaussian_noise(t, mean=0, std=0.02),  # Add Gaussian noise
     ]
-augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(processed_tensors, Y1, Y2, 5, augmentations)
+augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(train_X, train_Y1, train_Y2, 5, augmentations)
 print(f"Generated {len(augmented_tensors)} augmented tensors.")
 
-# Łączymy oryginalne dane i augmentacje
-all_tensors = processed_tensors + augmented_tensors
-tensor_batch = torch.stack(all_tensors).unsqueeze(1)  # (N, D, H, W)
-print(tensor_batch.shape)
-Y1.extend(augmented_Y1)
-Y2.extend(augmented_Y2)
+# Combining original and augmented training data
+train_X = torch.cat([train_X] + [augmented_tensors], dim=0)
+train_Y1 = torch.cat([train_Y1] + [augmented_Y1], dim=0)
+train_Y2 = torch.cat([train_Y2] + [augmented_Y2], dim=0)
 
-dataset = Custom3DDataset(tensor_batch, Y1)
-dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+# Creation of DataLoaders
+train_dataset = Custom3DDataset(train_X.unsqueeze(1), train_Y1)  # (N, 1, D, H, W)
+val_dataset = Custom3DDataset(val_X.unsqueeze(1), val_Y1)
+test_dataset = Custom3DDataset(test_X.unsqueeze(1), test_Y1)
+print(f"📊 Liczba próbek w zbiorze treningowym: {len(train_dataset)}")
+print(f"📊 Liczba próbek w zbiorze walidacyjnym: {len(val_dataset)}")
+print(f"📊 Liczba próbek w zbiorze testowym: {len(test_dataset)}")
 
-# Inicjalizacja modelu, funkcji straty i optymalizatora
+train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
+
+# Initialization of the model, loss function and optimizer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Device: {device}")
 model = Conv3DNet().to(device)
 
 criterion_y1 = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# Pętla treningowa
-epochs = 3
+# Training loop
+epochs = 20
 for epoch in range(epochs):
     model.train()
     running_loss = 0.0
     correct_y1 = 0
     total = 0
 
-    for inputs, labels_y1 in dataloader:
-        print(inputs.shape)
+    for inputs, labels_y1 in train_loader:
         inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
-
         optimizer.zero_grad()
-
         outputs_y1 = model(inputs)
-
         loss_y1 = criterion_y1(outputs_y1, labels_y1)
-
         loss = loss_y1
         loss.backward()
         optimizer.step()
-
         running_loss += loss.item()
-
         _, predicted_y1 = torch.max(outputs_y1, 1)
-
         correct_y1 += (predicted_y1 == labels_y1).sum().item()
         total += labels_y1.size(0)
 
-    epoch_loss = running_loss / len(dataloader)
+    epoch_loss = running_loss / len(train_loader)
     epoch_accuracy_y1 = correct_y1 / total
 
-    print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss:.4f}, Accuracy y1: {epoch_accuracy_y1:.4f}")
+    # Validation
+    model.eval()
+    val_loss = 0.0
+    correct_y1_val = 0
+    total_val = 0
+
+    with torch.no_grad():
+        for inputs, labels_y1 in val_loader:
+            inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
+
+            outputs_y1 = model(inputs)
+            loss_y1 = criterion_y1(outputs_y1, labels_y1)
+
+            val_loss += loss_y1.item()
+            _, predicted_y1 = torch.max(outputs_y1, 1)
+            correct_y1_val += (predicted_y1 == labels_y1).sum().item()
+            total_val += labels_y1.size(0)
+
+    val_loss /= len(val_loader)
+    val_accuracy_y1 = correct_y1_val / total_val
+
+    print(f"Epoch {epoch + 1}/{epochs}, "
+          f"Train Loss: {epoch_loss:.4f}, Train Accuracy: {epoch_accuracy_y1:.4f}, "
+          f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy_y1:.4f}")
+
+
+# Testing the model
+model.eval()
+all_preds = []
+all_labels = []
+
+with torch.no_grad():
+    for inputs, labels_y1 in test_loader:
+        inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
+
+        outputs_y1 = model(inputs)
+        _, predicted_y1 = torch.max(outputs_y1, 1)
+
+        all_preds.extend(predicted_y1.cpu().numpy())
+        all_labels.extend(labels_y1.cpu().numpy())
+
+# Metrics calculation
+accuracy = accuracy_score(all_labels, all_preds)
+conf_matrix = confusion_matrix(all_labels, all_preds)
+class_report = classification_report(all_labels, all_preds)
+
+print(f"\n✅ Test Accuracy: {accuracy:.4f}")
+print("\nConfusion Matrix:")
+print(conf_matrix)
+print("\nClassification Report:")
+print(class_report)

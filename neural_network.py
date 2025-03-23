@@ -1,4 +1,4 @@
-import torch
+from torch.utils.data import Dataset
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -48,3 +48,17 @@ class Conv3DNet(nn.Module):
         x = self.fc2(x)
 
         return x
+
+
+class Custom3DDataset(Dataset):
+    def __init__(self, tensors, y1_labels):
+        self.tensors = tensors
+        self.y1_labels = y1_labels
+
+    def __len__(self):
+        return len(self.tensors)
+
+    def __getitem__(self, idx):
+        x = self.tensors[idx]  # dodajemy kanał
+        y1 = self.y1_labels[idx]
+        return x, y1
