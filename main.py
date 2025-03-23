@@ -7,10 +7,10 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from neural_network import Simple3DCNN
+from neural_network import Conv3DNet
 
 class Custom3DDataset(Dataset):
-    def __init__(self, tensors, y1_labels, y2_labels):
+    def __init__(self, tensors, y1_labels):
         self.tensors = tensors
         self.y1_labels = y1_labels
 
@@ -18,7 +18,7 @@ class Custom3DDataset(Dataset):
         return len(self.tensors)
 
     def __getitem__(self, idx):
-        x = self.tensors[idx].unsqueeze(0)  # dodajemy kanał
+        x = self.tensors[idx]  # dodajemy kanał
         y1 = self.y1_labels[idx]
         return x, y1
 
@@ -164,7 +164,7 @@ def add_gaussian_noise(tensor, mean=0, std=0.01):
     return tensor + noise
 
 
-def generate_augmented_tensors(tensor_list, num_tensors, augmentations):
+def generate_augmented_tensors(tensor_list, y1_list, y2_list, num_tensors, augmentations):
     """
     Generates a specified number of augmented tensors by applying random augmentations
     to randomly chosen tensors from the input list.
@@ -178,10 +178,15 @@ def generate_augmented_tensors(tensor_list, num_tensors, augmentations):
         list of torch.Tensor: List of newly augmented tensors.
     """
     augmented_tensors = []
+    augmented_y1 = []
+    augmented_y2 = []
 
     for _ in range(num_tensors):
         # Randomly select a tensor from the input list
-        tensor = random.choice(tensor_list)
+        idx = random.randint(0, len(tensor_list) - 1)
+        tensor = tensor_list[idx]
+        y1 = y1_list[idx]
+        y2 = y2_list[idx]
 
         # Randomly select an augmentation function
         augmentation = random.choice(augmentations)
@@ -189,10 +194,12 @@ def generate_augmented_tensors(tensor_list, num_tensors, augmentations):
         # Apply the augmentation to the tensor
         augmented_tensor = augmentation(tensor.clone())
 
-        # Append the augmented tensor to the result list
+        # Append augmented tensor and its labels
         augmented_tensors.append(augmented_tensor)
+        augmented_y1.append(y1)  # y1 stays the same
+        augmented_y2.append(y2)  # y2 stays the same
 
-    return augmented_tensors
+    return augmented_tensors, augmented_y1, augmented_y2
 
 
 # Ścieżka do folderu z danymi
@@ -218,22 +225,28 @@ augmentations = [
         lambda t: translate(t, max_shift=10),  # Translate
         lambda t: add_gaussian_noise(t, mean=0, std=0.02),  # Add Gaussian noise
     ]
-augmented_tensors = generate_augmented_tensors(processed_tensors, 5, augmentations)
+augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(processed_tensors, Y1, Y2, 5, augmentations)
 print(f"Generated {len(augmented_tensors)} augmented tensors.")
 
+# Łączymy oryginalne dane i augmentacje
 all_tensors = processed_tensors + augmented_tensors
-dataset = Custom3DDataset(all_tensors, Y1, Y2)
+tensor_batch = torch.stack(all_tensors).unsqueeze(1)  # (N, D, H, W)
+print(tensor_batch.shape)
+Y1.extend(augmented_Y1)
+Y2.extend(augmented_Y2)
+
+dataset = Custom3DDataset(tensor_batch, Y1)
 dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 
 # Inicjalizacja modelu, funkcji straty i optymalizatora
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Simple3DCNN().to(device)
+model = Conv3DNet().to(device)
 
 criterion_y1 = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Pętla treningowa
-epochs = 10
+epochs = 3
 for epoch in range(epochs):
     model.train()
     running_loss = 0.0
@@ -241,6 +254,7 @@ for epoch in range(epochs):
     total = 0
 
     for inputs, labels_y1 in dataloader:
+        print(inputs.shape)
         inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
 
         optimizer.zero_grad()
