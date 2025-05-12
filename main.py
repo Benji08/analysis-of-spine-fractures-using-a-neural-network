@@ -10,6 +10,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from neural_network import Conv3DNet, Custom3DDataset
+from collections import Counter
 
 
 def verify_data_shape(folder_path):
@@ -39,7 +40,7 @@ def verify_data_shape(folder_path):
     else:
         return False, shapes
 
-def preprocess_and_convert(file_path, lower_bound=0, upper_bound=2000):
+def preprocess_and_convert(file_path, lower_bound=0, upper_bound=1200):
     """
     Preprocesses a single .nrrd file and converts it to a PyTorch tensor.
 
@@ -59,19 +60,20 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=2000):
 
     # Currently using standardization without normalization
     # Step 3: Normalize the data to [0, 1]
-    #data = (data - data.min()) / (data.max() - data.min())
+    data = (data - data.min()) / (data.max() - data.min())
 
+    # Currently using normalization without standardization
     # Step 4: Standardize the data
-    mean = np.mean(data)
-    std = np.std(data)
-    data = (data - mean) / std
+    # mean = np.mean(data)
+    # std = np.std(data)
+    # data = (data - mean) / std
 
     # Step 5: Convert to PyTorch tensor
     tensor = torch.tensor(data, dtype=torch.float32)
 
     # Extract y1 and y2 from filename
     filename = os.path.basename(file_path)
-    if filename[7:9] == "--":
+    if filename[7:9] == "--" or filename[7:9] == "A0" or filename[7:9] == "A1":
         y1 = 0
         y2 = 0
     else:
@@ -157,13 +159,17 @@ def generate_augmented_tensors(tensors, y1, y2, num_tensors, augmentations):
         torch.Tensor: New labels y1 with shape (num_tensors,).
         torch.Tensor: New labels y2 with shape (num_tensors,).
     """
+    counter = Counter(y1.tolist())
+    minority_class = min(counter, key=counter.get)
+    minority_indices = (y1 == minority_class).nonzero(as_tuple=True)[0]
+
     N, D, H, W = tensors.shape
     augmented_samples = []
     augmented_y1 = []
     augmented_y2 = []
 
     for _ in range(num_tensors):
-        idx = random.randint(0, N - 1)
+        idx = random.choice(minority_indices)
         tensor = tensors[idx]
         label_y1 = y1[idx]
         label_y2 = y2[idx]
@@ -181,6 +187,13 @@ def generate_augmented_tensors(tensors, y1, y2, num_tensors, augmentations):
 
     return augmented_samples, augmented_y1, augmented_y2
 
+def print_class_distribution(labels, label_name):
+    label_list = labels.tolist()
+    counter = Counter(label_list)
+    print(f"📊 Rozkład klas dla {label_name}:")
+    for cls, count in sorted(counter.items()):
+        print(f"  Klasa {cls}: {count} próbek")
+
 
 # Path to data folder
 folder_path = "C:/Users/barba/OneDrive/Pulpit/tomografia"
@@ -192,7 +205,7 @@ Y2 = []
 for filename in os.listdir(folder_path):
     if filename.endswith('.nrrd'):
         file_path = os.path.join(folder_path, filename)
-        tensor, y1, y2 = preprocess_and_convert(file_path, lower_bound=150, upper_bound=1500)
+        tensor, y1, y2 = preprocess_and_convert(file_path)
         tensor = resize_tensor(tensor)
         processed_tensors.append(tensor)
         Y1.append(y1)
@@ -201,6 +214,7 @@ for filename in os.listdir(folder_path):
 processed_tensors = torch.stack(processed_tensors)  # (N, D, H, W)
 Y1 = torch.tensor(Y1)
 Y2 = torch.tensor(Y2)
+print_class_distribution(Y1, "Y1 (binary)")
 
 print(f"Generated {len(processed_tensors)} tensors. Shape = {processed_tensors[0].shape}")
 # Division into sets: 70% train, 15% val, 15% test
@@ -218,13 +232,16 @@ augmentations = [
         lambda t: translate(t, max_shift=10),  # Translate
         lambda t: add_gaussian_noise(t, mean=0, std=0.02),  # Add Gaussian noise
     ]
-augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(train_X, train_Y1, train_Y2, 5, augmentations)
+augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(train_X, train_Y1, train_Y2, 30, augmentations)
 print(f"Generated {len(augmented_tensors)} augmented tensors.")
+print_class_distribution(train_Y1, "Y1 (binary) for training sample")
 
 # Combining original and augmented training data
 train_X = torch.cat([train_X] + [augmented_tensors], dim=0)
 train_Y1 = torch.cat([train_Y1] + [augmented_Y1], dim=0)
 train_Y2 = torch.cat([train_Y2] + [augmented_Y2], dim=0)
+print_class_distribution(train_Y1, "Y1 (binary) for training sample")
+
 
 # Creation of DataLoaders
 train_dataset = Custom3DDataset(train_X.unsqueeze(1), train_Y1)  # (N, 1, D, H, W)
@@ -247,7 +264,7 @@ criterion_y1 = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training loop
-epochs = 20
+epochs = 100
 for epoch in range(epochs):
     model.train()
     running_loss = 0.0
@@ -276,6 +293,9 @@ for epoch in range(epochs):
     correct_y1_val = 0
     total_val = 0
 
+    all_preds = []
+    all_labels = []
+
     with torch.no_grad():
         for inputs, labels_y1 in val_loader:
             inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
@@ -287,6 +307,13 @@ for epoch in range(epochs):
             _, predicted_y1 = torch.max(outputs_y1, 1)
             correct_y1_val += (predicted_y1 == labels_y1).sum().item()
             total_val += labels_y1.size(0)
+
+            all_preds.extend(predicted_y1.cpu().numpy())  # przesuń do CPU i dodaj do listy
+            all_labels.extend(labels_y1.cpu().numpy())
+
+            # Wypisz predykcje na bieżąco
+            for i in range(len(predicted_y1)):
+                print(f"True label: {labels_y1[i].item()}, Predicted label: {predicted_y1[i].item()}")
 
     val_loss /= len(val_loader)
     val_accuracy_y1 = correct_y1_val / total_val
