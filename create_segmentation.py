@@ -3,7 +3,7 @@ from extract_bboxes_from_segmentation import read_and_extract
 
 
 base_dir = Path(__file__).parent
-badania_dir = base_dir / "badania"
+badania_dir = base_dir / "serie"
 segmentacje_dir = base_dir / "segmentacje"
 
 # Znajdź wszystkie pliki kończące się na 'segmentation.nrrd'
