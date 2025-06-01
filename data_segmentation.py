@@ -1,6 +1,8 @@
 import os
 import numpy as np
-import nrrd  # biblioteka pynrrd, pip install pynrrd
+import nrrd
+from pathlib import Path
+
 
 def read_nrrds(file_seg: str, file_org: str):
     """
@@ -103,7 +105,7 @@ def extract_bboxes(data_seg, header_seg, data_org, header_org, new_dir, textfile
 
 
 def read_and_extract(file_seg: str, file_org: str, new_dir: str, textfile: str = None, new_dir_exists=False,
-                     padding: int = 2):
+                     padding: int = 10):
     """
     Function to read NRRD files and extract bounding boxes for labeled regions.
 
@@ -120,3 +122,46 @@ def read_and_extract(file_seg: str, file_org: str, new_dir: str, textfile: str =
     if textfile is None:
         textfile = new_dir + "\\segmentation_results.txt"
     extract_bboxes(data_seg, header_seg, data_org, header_org, new_dir, textfile, new_dir_exists, padding)
+
+
+def process_segmentations(studies_dir_path: str, segmentations_dir_path: str):
+    """
+    Processes segmentation files and their corresponding study volumes.
+
+    This function searches for all segmentation files in the `studies_dir_path` directory
+    with names ending in ' segmentation.nrrd'. For each such file, it looks for a matching
+    study volume that shares the same base name but includes a suffix in the form ' x<digit(s)>'.
+    If a match is found, the segmentation and study volume are passed to the
+    `read_and_extract` function, and the results are saved in a subdirectory of
+    `segmentations_dir_path` named after the base name and the matched suffix.
+
+    Args:
+        studies_dir_path (str): Path to the directory containing both segmentation and study volume files.
+        segmentations_dir_path (str): Path to the directory where output subdirectories will be created.
+    """
+    studies_dir = Path(studies_dir_path)
+    segmentations_dir = Path(segmentations_dir_path)
+
+    for segmentation_path in studies_dir.glob("* segmentation.nrrd"):
+        base_name = segmentation_path.stem.replace(" segmentation", "")
+
+        matching_study = None
+        for study_file in studies_dir.glob(f"{base_name} x*.nrrd"):
+            matching_study = study_file
+            break
+
+        if not matching_study:
+            print(f"No matching study found for: {base_name}")
+            continue
+
+        suffix = matching_study.stem.replace(base_name, "").strip()
+        output_dir_name = f"{base_name} {suffix}" if suffix else base_name
+        output_dir = segmentations_dir / output_dir_name
+
+        print(f"Processing study: {output_dir_name}")
+        read_and_extract(str(segmentation_path), str(matching_study), str(output_dir))
+
+if __name__ == "__main__":
+    studies_path = "C:/Users/barba/OneDrive/Pulpit/serie_2"
+    segmentations_path = "C:/Users/barba/OneDrive/Pulpit/data_set"
+    process_segmentations(studies_path, segmentations_path)
