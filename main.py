@@ -37,7 +37,7 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=1200):
     filename = os.path.basename(file_path)
     a= filename[4:6]
     b= filename[7:9]
-    if filename[4:6] == "--" or filename[7:9] == "--":
+    if filename[4:6] == "--" and filename[7:9] == "--":
         y1 = 0
         y2 = 0
     else:
