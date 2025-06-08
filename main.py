@@ -11,9 +11,10 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from neural_network import Conv3DNet, Custom3DDataset
 from collections import Counter
-import matplotlib.pyplot as plt  # <--- dodane
+import matplotlib.pyplot as plt
+from datetime import datetime
 
-# --- Funkcje pomocnicze ---
+
 def verify_data_shape(folder_path):
     shapes = set()
     for filename in os.listdir(folder_path):
@@ -35,9 +36,7 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=1200):
     data = (data - data.min()) / (data.max() - data.min())
     tensor = torch.tensor(data, dtype=torch.float32)
     filename = os.path.basename(file_path)
-    a= filename[4:6]
-    b= filename[7:9]
-    if filename[4:6] == "--" and filename[7:9] == "--":
+    if filename[4:6] == "__" and filename[7:9] == "__":
         y1 = 0
         y2 = 0
     else:
@@ -47,7 +46,7 @@ def preprocess_and_convert(file_path, lower_bound=0, upper_bound=1200):
         y2 = y2_mapping.get(code, 0)
     return tensor, y1, y2
 
-def resize_tensor(tensor, target_size=(64, 64, 32)):
+def resize_tensor(tensor, target_size=(32, 32, 16)):
     tensor = tensor.unsqueeze(0).unsqueeze(0)
     tensor_resized = F.interpolate(tensor, size=target_size, mode='trilinear', align_corners=False)
     return tensor_resized.squeeze(0).squeeze(0)
@@ -99,7 +98,7 @@ def print_class_distribution(labels, label_name):
     for cls, count in sorted(counter.items()):
         print(f"  Klasa {cls}: {count} próbek")
 
-# --- Przetwarzanie danych ---
+
 folder_path = "C:/Users/bpawlak/Desktop/data_set"
 processed_tensors = []
 Y1 = []
@@ -128,7 +127,7 @@ val_X, test_X, val_Y1, test_Y1, val_Y2, test_Y2 = train_test_split(
 )
 
 augmentations = [flip_x, lambda t: translate(t, 10), lambda t: add_gaussian_noise(t, 0, 0.02)]
-augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(train_X, train_Y1, train_Y2, 30, augmentations)
+augmented_tensors, augmented_Y1, augmented_Y2 = generate_augmented_tensors(train_X, train_Y1, train_Y2, 600, augmentations)
 
 train_X = torch.cat([train_X, augmented_tensors], dim=0)
 train_Y1 = torch.cat([train_Y1, augmented_Y1], dim=0)
@@ -146,17 +145,20 @@ test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
+print(datetime.now())
 model = Conv3DNet().to(device)
 
-criterion_y1 = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+criterion = nn.BCEWithLogitsLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
 
 # --- Pętla treningowa ---
-epochs = 5
+epochs = 100
 train_losses = []
 val_losses = []
 train_accuracies = []
 val_accuracies = []
+
+
 
 for epoch in range(epochs):
     model.train()
@@ -165,32 +167,53 @@ for epoch in range(epochs):
     total = 0
 
     for inputs, labels_y1 in train_loader:
+        # --- POPRAWKA 1: ZMIANA KSZTAŁTU I TYPU ETYKIET ---
+        labels_y1 = labels_y1.float().view(-1, 1)  # Must be (batch_size, 1) and float
+
         inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
+
         optimizer.zero_grad()
         outputs_y1 = model(inputs)
-        loss_y1 = criterion_y1(outputs_y1, labels_y1)
-        loss = loss_y1
+
+        # Obliczenie straty jest już OK, bo model i etykiety mają ten sam kształt
+        loss = criterion(outputs_y1, labels_y1)
         loss.backward()
         optimizer.step()
+
         running_loss += loss.item()
-        _, predicted_y1 = torch.max(outputs_y1, 1)
+
+        # --- POPRAWKA 2:POPRAWNA METODA OBLICZANIA PREDYKCJI DLA KLASYFIKACJI BINARNEJ ---
+        # 1. Przepuść logity przez funkcję sigmoid, aby uzyskać prawdopodobieństwa [0, 1]
+        probs = torch.sigmoid(outputs_y1)
+        # 2. Ustaw próg 0.5, aby uzyskać finalną predykcję 0 lub 1
+        predicted_y1 = (probs > 0.5).float()
+
+        # Porównaj predykcje z etykietami
         correct_y1 += (predicted_y1 == labels_y1).sum().item()
         total += labels_y1.size(0)
 
     epoch_loss = running_loss / len(train_loader)
     epoch_accuracy_y1 = correct_y1 / total
 
+    # --- PĘTLA WALIDACYJNA (te same poprawki) ---
     model.eval()
     val_loss = 0.0
     correct_y1_val = 0
     total_val = 0
     with torch.no_grad():
         for inputs, labels_y1 in val_loader:
+            # --- POPRAWKA 1 (walidacja) ---
+            labels_y1 = labels_y1.float().view(-1, 1)
+
             inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
             outputs_y1 = model(inputs)
-            loss_y1 = criterion_y1(outputs_y1, labels_y1)
+            loss_y1 = criterion(outputs_y1, labels_y1)
             val_loss += loss_y1.item()
-            _, predicted_y1 = torch.max(outputs_y1, 1)
+
+            # --- POPRAWKA 2 (walidacja) ---
+            probs = torch.sigmoid(outputs_y1)
+            predicted_y1 = (probs > 0.5).float()
+
             correct_y1_val += (predicted_y1 == labels_y1).sum().item()
             total_val += labels_y1.size(0)
 
@@ -235,18 +258,28 @@ all_labels = []
 
 with torch.no_grad():
     for inputs, labels_y1 in test_loader:
+        # --- POPRAWKA 1 (test) ---
+        labels_y1 = labels_y1.float().view(-1, 1)
+
         inputs, labels_y1 = inputs.to(device), labels_y1.to(device)
         outputs_y1 = model(inputs)
-        _, predicted_y1 = torch.max(outputs_y1, 1)
+
+        # --- POPRAWKA 2 (test) ---
+        probs = torch.sigmoid(outputs_y1)
+        predicted_y1 = (probs > 0.5).float()
+
         all_preds.extend(predicted_y1.cpu().numpy())
         all_labels.extend(labels_y1.cpu().numpy())
 
+# Reszta kodu ewaluacji jest OK
 accuracy = accuracy_score(all_labels, all_preds)
 conf_matrix = confusion_matrix(all_labels, all_preds)
-class_report = classification_report(all_labels, all_preds)
+# Dodaj zero_division=0, aby uniknąć warningu, gdyby model nie przewidział jakiejś klasy
+class_report = classification_report(all_labels, all_preds, zero_division=0)
 
 print(f"\n✅ Test Accuracy: {accuracy:.4f}")
 print("\nConfusion Matrix:")
 print(conf_matrix)
 print("\nClassification Report:")
 print(class_report)
+print(datetime.now())
