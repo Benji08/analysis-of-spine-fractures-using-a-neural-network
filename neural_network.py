@@ -1,6 +1,6 @@
 from torch.utils.data import Dataset
 import torch.nn as nn
-import torch.nn.functional as F
+import numpy as np
 import torch
 
 
@@ -9,7 +9,6 @@ class Conv3DNet(nn.Module):
         super(Conv3DNet, self).__init__()
 
         # --- Część konwolucyjna (Ekstraktor Cech) ---
-        # Używamy nn.Sequential dla czystości kodu
         self.features = nn.Sequential(
             # Blok 1
             nn.Conv3d(1, 32, kernel_size=3, padding=1),
@@ -36,8 +35,6 @@ class Conv3DNet(nn.Module):
             nn.MaxPool3d(kernel_size=2, stride=2)
         )
 
-        # --- Dynamiczne obliczanie rozmiaru dla warstwy FC ---
-        # To jest NAJLEPSZA praktyka. Już nigdy nie będziesz musiał ręcznie zmieniać tej liczby!
         with torch.no_grad():
             _dummy_input = torch.randn(1, *input_shape)
             _dummy_output = self.features(_dummy_input)
@@ -47,13 +44,13 @@ class Conv3DNet(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(in_features_for_fc, 1024),
             nn.ReLU(),
-            nn.Dropout(0.5), # <--- NOWOŚĆ: Kluczowa warstwa do walki z overfittingiem!
-            nn.Linear(1024, 1) # <--- POPRAWKA: JEDNO wyjście dla klasyfikacji binarnej z BCEWithLogitsLoss
+            nn.Dropout(0.5),
+            nn.Linear(1024, 1)
         )
 
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1) # Spłaszczenie
+        x = x.view(x.size(0), -1)
         x = self.classifier(x)
         return x
 
@@ -67,6 +64,59 @@ class Custom3DDataset(Dataset):
         return len(self.tensors)
 
     def __getitem__(self, idx):
-        x = self.tensors[idx]  # dodajemy kanał
+        x = self.tensors[idx]
         y1 = self.y1_labels[idx]
         return x, y1
+
+
+class EarlyStopping:
+    """
+    Zatrzymuje trening, gdy monitorowana metryka przestaje się poprawiać.
+    """
+
+    def __init__(self, patience=7, mode="min", verbose=False, delta=0, path='best_model.pt', trace_func=print):
+        self.patience = patience
+        self.mode = mode
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.delta = delta
+        self.path = path
+        self.trace_func = trace_func
+
+        if self.mode == "min":
+            self.val_score_min = np.inf
+        else:
+            self.val_score_min = -np.inf  # W trybie max zaczynamy od minus nieskończoności
+
+    def __call__(self, score, model):
+        if self.mode == "min":
+            # Chcemy minimalizować (np. loss)
+            if score < self.val_score_min - self.delta:
+                self.save_checkpoint(score, model)
+                self.val_score_min = score
+                self.counter = 0
+            else:
+                self.counter += 1
+                if self.verbose:
+                    self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                if self.counter >= self.patience:
+                    self.early_stop = True
+
+        else:
+            if score > self.val_score_min + self.delta:
+                self.save_checkpoint(score, model)
+                self.val_score_min = score
+                self.counter = 0
+            else:
+                self.counter += 1
+                if self.verbose:
+                    self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                if self.counter >= self.patience:
+                    self.early_stop = True
+
+    def save_checkpoint(self, score, model):
+        if self.verbose:
+            self.trace_func(f'Validation score improved ({self.val_score_min:.6f} --> {score:.6f}). Saving model ...')
+        torch.save(model.state_dict(), self.path)
