@@ -82,7 +82,8 @@ def extract_bboxes(data_seg, header_seg, data_org, header_org, new_dir, textfile
         padding (int, optional): Padding added to the bounding box in each dimension.
     """
     os.makedirs(new_dir, exist_ok=new_dir_exists)
-    for x in range(26):
+    vertebrae_num = 26
+    for x in range(vertebrae_num):
         key = f"Segment{x}_LabelValue"
         if key in header_seg:
             label_value = int(header_seg[key])
